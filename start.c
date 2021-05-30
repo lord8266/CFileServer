@@ -5,10 +5,10 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/sendfile.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <kqueue/sys/event.h>
+#include <libgen.h>
+#include <sys/event.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
@@ -21,6 +21,7 @@
 
 typedef struct kevent KEvent;
 typedef struct sockaddr_in sockaddr_in;
+typedef struct sockaddr sockaddr;
 typedef struct dirent dirent;
 typedef struct stat Stat;
 
@@ -34,6 +35,7 @@ SendFileData* createSendFileData(int connFd,int fileFd,int size);
 void addConnectionWriteEvent(SendFileData *sfd);
 
 int kq;
+int BUFSIZE=1000;
 
 // ------------------------------------------------------- HTML and Files -----------------------------------------------
 char *base;
@@ -149,20 +151,28 @@ char *listResponse(DIR *dp,char *path){
     return reth;
 }
 
-void load(char *path,char **loc){
+char* load(char *path){
     FILE *f = fopen(path,"r");
-    fseek(f,0,SEEK_END);
-    int len = ftell(f);
-    fseek(f,0,SEEK_SET);
-    *loc =malloc(len+1);
-    (*loc)[len] = '\0';
-    fread(*loc,1,len,f);
+    int len = getFileStats(path).st_size;
+    char *data = malloc(len+1);
+    fread(data,1,len,f);
+    data[len] = '\0';
+    return data;
+}
+
+char *getClientAddress(sockaddr_in *addr){
+    char *a;
+    asprintf(&a,"%s:%d",inet_ntoa(addr->sin_addr),addr->sin_port);
+    return a;
 }
 
 void connHandler(KEvent event){
     int size = event.data;
     int connFd = event.ident;
     char *path = retrievePath(connFd,size);
+    char *client = getClientAddress(event.udata);
+    printf("%s<%d> requests %s\n",client,event.ident,path);
+    free(client);
     char *fullpath;
     asprintf(&fullpath,"%s%s",base,path);
     char *resp;
@@ -182,8 +192,9 @@ void connHandler(KEvent event){
     }
     free(path);
     free(fullpath);
-    closedir(dp);
-    printf("%s\n",resp);
+    if (dp){
+        closedir(dp);
+    }
     write(connFd,resp,strlen(resp));
     free(resp);
     // close(connFd);
@@ -232,7 +243,7 @@ int createListenerSocket(char *ipaddress,int port,int nconcurrent)
     inet_pton(AF_INET,ipaddress,&address.sin_addr.s_addr);
     address.sin_port = htons(port);
 
-    if (bind(server_fd, (struct sockaddr *)&address,
+    if (bind(server_fd, (sockaddr *)&address,
              sizeof(address)) < 0)
     {
         perror("bind failed");
@@ -260,9 +271,8 @@ void addConnectionReadEvent(int connFd,sockaddr_in* address){
 
 void addConnectionWriteEvent(SendFileData *sfd){
     KEvent event;
-    EV_SET(&event,sfd->connFd,EVFILT_WRITE,EV_ADD|EV_ONESHOT,0,0,NULL);
+    EV_SET(&event,sfd->connFd,EVFILT_WRITE,EV_ADD|EV_ONESHOT,0,0,sfd);
     kevent(kq,&event,1,NULL,0,NULL);
-    printf("done\n");
 }
 
 int main(int argc,char **argv){
@@ -278,25 +288,30 @@ int main(int argc,char **argv){
         printf("Cannot open %s\n",argv[1]);
         return 1;
     }
+
+    if (argc==3){
+        BUFSIZE = atoi(argv[2]);
+    }
     
     printf("Serving on %s\n",base);
+    printf("Buffer size: %d\n",BUFSIZE);
 
-    load("templates/err.html",&errTemplate);
-    load("templates/list.html",&listTemplate);
+    errTemplate = load("templates/err.html");
+    listTemplate = load("templates/list.html");
 
     kq = kqueue();
     int listenSocketFd = createListenerSocket("0.0.0.0",8080,10);
     addListenerEvent(listenSocketFd);
-
-    for (int i=0;i<10;i++){
+    int i=0;
+    while(1){
+       // if (i++>50)break;
         KEvent event;
         kevent(kq,NULL,0,&event,1,NULL);
         if (event.ident==listenSocketFd){
-            printf("Accept\n");
             int newSocket;
-            sockaddr_in *address = malloc(sizeof(address));
-            socklen_t addrlen = sizeof(address);
-            if ((newSocket = accept(listenSocketFd, address,&addrlen)) < 0){
+            sockaddr_in *address = malloc(sizeof(sockaddr_in));
+            socklen_t addrlen = sizeof(sockaddr_in);
+            if ((newSocket = accept(listenSocketFd, (sockaddr*)address,&addrlen)) < 0){
                 printf("Accept error\n");
             }
             else {
@@ -305,38 +320,42 @@ int main(int argc,char **argv){
                 fcntl(newSocket, F_SETFL, flags | O_NONBLOCK);
                 addConnectionReadEvent(newSocket,address);
             }
-            printf("Accepted\n");
         }
         else if(event.filter==EVFILT_WRITE){
             SendFileData *sfd = (SendFileData*)event.udata;
-            sendfile(sfd->connFd,sfd->fileFd,&sfd->offset,1000);
-            if (sfd->offset<sfd->size){
-                addConnectionWriteEvent(sfd);
+            errno = 0;
+            off_t len=0;
+            int cancontinue=1;
+            int stop=0;
+            if(sendfile(sfd->fileFd,sfd->connFd,sfd->offset,BUFSIZE,NULL,&len,0)){
+                if (errno!=EAGAIN){ // not all bytes were written if EAGAIN
+                    cancontinue = 0;
+                    stop=1;
+                }
             }
-            else {
+            if (cancontinue){
+                sfd->offset+=len;
+                //printf("sending %d:%d\n",errno,sfd->offset);
+                if (sfd->offset<sfd->size){
+                    addConnectionWriteEvent(sfd);
+                }
+                else {
+                    stop=1;
+                }
+            }
+            if (stop){
                 close(sfd->fileFd);
+                free(sfd);
             }
         }
         else if (event.flags & EV_EOF){
-            if (event.udata){
-                printf("close conn\n");
-                free(event.udata);
-            }
-            event.flags = EV_DELETE;
-            kevent(kq,&event,1,NULL,0,NULL);
+            char *client = getClientAddress(event.udata);
+            printf("%s:%d<%d> disconnected\n",client,((sockaddr_in*)event.udata)->sin_port,event.ident);
+            free(event.udata);
+            free(client);
+            close(event.ident);
         }
         else {
-            // int size = event.data;
-            // char *data;
-            // sockaddr_in address = *(sockaddr_in*)event.udata;
-            // char *ip = getIPAddressString(address.sin_addr.s_addr);
-            // int l =asprintf(&data,"I recieved a message of size %d from <%d>%s:%d",size,event.ident,ip,address.sin_port);
-            // printf("%s\n",data);
-            // char *recv = malloc(size)+1;
-            // read(event.ident,recv,size);
-            // recv[size] = '\0';
-            // printf("%s\n",recv);
-            // write(event.ident,data,l);
             connHandler(event);
         }
     }
