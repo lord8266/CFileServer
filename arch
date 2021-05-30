@@ -1,0 +1,12 @@
+create a struct
+fd
+socketdesc
+offset
+total
+aiocb
+
+create a read aio from fd
+on complete sig 82 with this struct
+
+create a write aio to socket
+on complete sig 83 with this struct
