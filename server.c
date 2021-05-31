@@ -35,7 +35,7 @@ SendFileData* createSendFileData(int connFd,int fileFd,int size);
 void addConnectionWriteEvent(SendFileData *sfd);
 
 int kq;
-int BUFSIZE=1000;
+int BUFSIZE=2000;
 
 // ------------------------------------------------------- HTML and Files -----------------------------------------------
 char *base;
@@ -278,6 +278,7 @@ void addConnectionWriteEvent(SendFileData *sfd){
 
 int main(int argc,char **argv){
     DIR *dp;
+    int port=8080;
     if (argc==1){
         base = getcwd(NULL,0);
     }
@@ -291,17 +292,21 @@ int main(int argc,char **argv){
     }
 
     if (argc==3){
-        BUFSIZE = atoi(argv[2]);
+        port = atoi(argv[2]);
+    }
+
+    if (argc==4){
+        BUFSIZE = atoi(argv[3]);
     }
     
-    printf("Serving on %s\n",base);
+    printf("Serving %s on 0.0.0.0:%d\n",base,port);
     printf("Buffer size: %d\n",BUFSIZE);
 
     errTemplate = load("templates/err.html");
     listTemplate = load("templates/list.html");
 
     kq = kqueue();
-    int listenSocketFd = createListenerSocket("0.0.0.0",8080,10);
+    int listenSocketFd = createListenerSocket("0.0.0.0",port,10);
     addListenerEvent(listenSocketFd);
     int i=0;
     while(1){
