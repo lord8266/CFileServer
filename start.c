@@ -45,7 +45,7 @@ char *itemtemplate =
 "<tr>"
 "<td><a class=\"%s\" href=\"%s%s\"> %s </a></td>"
 "<td><span>%d</span></td>"
-"<td><span>%d</span></td>"
+"<td><span>%s</span></td>"
 "</tr>";
 
 char *retrievePath(int connFd,int len){
@@ -127,19 +127,21 @@ char *listResponse(DIR *dp,char *path){
         }
         char *fullpath;asprintf(&fullpath,"%s%s%s",base,path,ep->d_name);
         Stat stats = getFileStats(fullpath);
+        char *lastmodified = ctime(&stats.st_mtim.tv_sec);
         free(fullpath);
         char *a;
         int an;
         if (ep->d_type==DT_DIR){
-            an =asprintf(&a,itemtemplate,"",ep->d_name,"/",ep->d_name,stats.st_size,stats.st_mtim);
+            an =asprintf(&a,itemtemplate,"",ep->d_name,"/",ep->d_name,stats.st_size,lastmodified);
         }
         else {
-            an =asprintf(&a,itemtemplate,"",ep->d_name,"",ep->d_name,stats.st_size,stats.st_mtim); 
+            an =asprintf(&a,itemtemplate,"",ep->d_name,"",ep->d_name,stats.st_size,lastmodified); 
         }
         buf = realloc(buf,n+an+1);
         strcpy(buf+n,a);
         n+=an;
         free(a);
+        free(lastmodified);
     }
     char *ret;
     asprintf(&ret,listTemplate,path,path,buf);
@@ -315,7 +317,6 @@ int main(int argc,char **argv){
             }
             else {
                 int flags = fcntl(newSocket, F_GETFL, 0);
-                assert(flags >= 0);
                 fcntl(newSocket, F_SETFL, flags | O_NONBLOCK);
                 addConnectionReadEvent(newSocket,address);
             }
@@ -327,11 +328,11 @@ int main(int argc,char **argv){
             int cancontinue=1;
             int stop=0;
             if(sendfile(sfd->fileFd,sfd->connFd,sfd->offset,BUFSIZE,NULL,&len,0)){
-                if (errno!=EAGAIN){ // not all bytes were written if EAGAIN
+                if (errno!=EAGAIN){
                     cancontinue = 0;
                     stop=1;
                 }
-                else {
+                else {  // not all bytes were written if EAGAIN
                     printf("here\n");
                 }
             }
