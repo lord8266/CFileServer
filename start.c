@@ -54,8 +54,7 @@ char *retrievePath(int connFd,int len){
     read(connFd,data,len);
     strtok(data," ");
     char *next = strtok(NULL," ");
-    char *path;
-    asprintf(&path,"%s",next);
+    char *path = strdup(next);
     free(data);
     return path;
 }
@@ -271,7 +270,7 @@ void addConnectionReadEvent(int connFd,sockaddr_in* address){
 
 void addConnectionWriteEvent(SendFileData *sfd){
     KEvent event;
-    EV_SET(&event,sfd->connFd,EVFILT_WRITE,EV_ADD|EV_ONESHOT,0,0,sfd);
+    EV_SET(&event,sfd->connFd,EVFILT_WRITE,EV_ADD,0,0,sfd);
     kevent(kq,&event,1,NULL,0,NULL);
 }
 
@@ -304,7 +303,7 @@ int main(int argc,char **argv){
     addListenerEvent(listenSocketFd);
     int i=0;
     while(1){
-       // if (i++>50)break;
+       //if (i++>50)break;
         KEvent event;
         kevent(kq,NULL,0,&event,1,NULL);
         if (event.ident==listenSocketFd){
@@ -332,20 +331,22 @@ int main(int argc,char **argv){
                     cancontinue = 0;
                     stop=1;
                 }
+                else {
+                    printf("here\n");
+                }
             }
             if (cancontinue){
                 sfd->offset+=len;
                 //printf("sending %d:%d\n",errno,sfd->offset);
-                if (sfd->offset<sfd->size){
-                    addConnectionWriteEvent(sfd);
-                }
-                else {
+                if (sfd->offset>=sfd->size){
                     stop=1;
                 }
             }
             if (stop){
                 close(sfd->fileFd);
                 free(sfd);
+                event.flags = EV_DELETE;
+                kevent(kq,&event,1,NULL,0,NULL);
             }
         }
         else if (event.flags & EV_EOF){
