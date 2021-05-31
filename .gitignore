@@ -1,3 +1,5 @@
 main*
 .vscode
 start
+vgcore*
+start.core
